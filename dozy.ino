@@ -1,54 +1,54 @@
 /*
- * Firmware for WiFi DIN-Switch module based on ESP8285: ATMS1601 WiFi Smart Timer Staircase Din Rail Time Switch
- * https://s.click.aliexpress.com/e/_Ass3lY
- * 
- * For more information on wiring, flashing, etc. see https://ibn.by/2021/04/07/dozy-firmware/
- * 
- * Works via MQTT over WiFi, as well as with directly attached to wall switch.
- * 
- * Working modes:
+   Firmware for WiFi DIN-Switch module based on ESP8285: ATMS1601 WiFi Smart Timer Staircase Din Rail Time Switch
+   https://s.click.aliexpress.com/e/_Ass3lY
+
+   For more information on wiring, flashing, etc. see https://ibn.by/2021/04/07/dozy-firmware/
+
+   Works via MQTT over WiFi, as well as with directly attached to wall switch.
+
+   Working modes:
  *   * RED LED blinks slow             - module in setup mode. At this moment open WiFi hotspot is enabled.
- *                                       Once enabled, one can connect 'Dozy-xxxxx' WiFi network and open
- *                                       configuration page on 192.168.4.1 address. After 5 minutes timeout it quits
- *                                       setup mode.
+                                         Once enabled, one can connect 'Dozy-xxxxx' WiFi network and open
+                                         configuration page on 192.168.4.1 address. After 5 minutes timeout it quits
+                                         setup mode.
  *   * RED LED blinks quick            - module in OTA flashing mode. The OTA service is running and waits a connection
- *                                       from Arduino studio over network port.
+                                         from Arduino studio over network port.
  *   * GREEN LED on/off                - Reflects relays state: close or open.
- *
- * Operation controls:
+
+   Operation controls:
  *   * Enter setup mode                - quickly press/release switch 5 times
- *
- * Configuration (setup mode):
- *   Following parameters can be found under 'Configure WiFi' menu item:
+
+   Configuration (setup mode):
+     Following parameters can be found under 'Configure WiFi' menu item:
  *    * SSID/password - connection to WiFi
  *    * mqtt server      - MQTT server address (or host name)
  *    * mqtt port        - MQTT port
  *    * mqtt client name - just quess :-)
  *    * mqtt user
  *    * mqtt password
- *    * mqtt output topic          - topic for output of relay current state. Value is 0/1 for off/on states. 
- *                                   Additionally contains a manual switch state by providing a dot in the end.
- *                                   Examples:
- *                                    '0.' - relay is off, button is pressed
- *                                    '1' - relay is on, button released
- *                                    '1.' - relay is on, button pressed
+ *    * mqtt output topic          - topic for output of relay current state. Value is 0/1 for off/on states.
+                                     Additionally contains a manual switch state by providing a dot in the end.
+                                     Examples:
+                                      '0.' - relay is off, button is pressed
+                                      '1' - relay is on, button released
+                                      '1.' - relay is on, button pressed
  *    * mqtt commands topic         - topic for commands input.
- *    * momentary switch            - when disabled - each manual button state change triggers relay state change. 
- *                                    when enabled - triggers relay state change on button press action only. 
- * 
- * Supports following commands over MQTT /cmd topics:
+ *    * momentary switch            - when disabled - each manual button state change triggers relay state change.
+                                      when enabled - triggers relay state change on button press action only.
+
+   Supports following commands over MQTT /cmd topics:
  *  * 1    - turn on appropriate relay (closes)
  *  * 0    - turn off appropriate relay (opens)
  *  * set  - enter setup mode.
- *              Example:
- *                'set' - open WiFi hotspot 'Dozy-xxxxx' will be enabled for 3 minutes. After 3 minutes will exit setup mode.
+                Example:
+                  'set' - open WiFi hotspot 'Dozy-xxxxx' will be enabled for 3 minutes. After 3 minutes will exit setup mode.
  *  * ota  - enter OTA mode for firmware update.
  *  * rst  - reset module.
- * 
- * 
- * Author: Anar Ibragimoff (anar@ibn.by)
- * 
- */
+
+
+   Author: Anar Ibragimoff (anar@ibn.by)
+
+*/
 #include <LittleFS.h>
 
 #include <ESP8266WiFi.h>        // https://github.com/esp8266/Arduino
@@ -130,6 +130,7 @@ IPAddress mqttServerIp = INADDR_NONE;
 boolean momentarySwitch = false;
 boolean sState;
 boolean lState;
+boolean gpioTrigger;
 unsigned long manualSetupActivatorTime;
 int manualSetupModeCounter;
 
@@ -141,21 +142,22 @@ void setup() {
   pinMode(SWITCH, INPUT);
   pinMode(RELAY, OUTPUT);
 
-  WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP 
+  WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
 
   // enable Auto Light Sleep (to reduce consumption during delay() periods in main loop)
   // enabling this + delay() in the main loop reduces consumption by module 0.8w -> 0.5w
-  wifi_set_sleep_type(LIGHT_SLEEP_T); 
+  wifi_set_sleep_type(LIGHT_SLEEP_T);
 
   digitalWrite(LED_RED, HIGH); // turn it off
   digitalWrite(LED_GREEN, HIGH); // turn it off
 
-  sState = ( digitalRead(SWITCH) == LOW ); 
+  sState = ( digitalRead(SWITCH) == LOW );
+  gpioTrigger = false;
 
   manualSetupModeCounter = 0;
 
   startWifiManager(false);
-  
+
   // MQTT connection
   mqttClient.setCallback(mqttCallback);
 
@@ -169,42 +171,42 @@ void setup() {
       digitalWrite(LED_GREEN, LOW);
     }
   });
-  
+
 }
 
 void loop() {
 
   if (otaRunning) {
-    
+
     ArduinoOTA.handle();
 
     if ((millis() - otaStart) > OTA_TIMEOUT_MS) {
       restart = true;
     }
-    
+
   } else {
-    
+
     gpioLoop();
-  
+
     wifimanagerLoop();
-  
+
     if (!offline) {
       mqttLoop();
     }
-  
+
     // try to save power by delaying, which forces a light sleep mode.
     delay(LOOP_DELAY_MS);
-  
+
   }
-  
+
   if (restart) {
     ESP.restart();
   }
-  
+
 }
 
 void gpioLoop() {
-  
+
   // process manual switches
   boolean sChanged = false;
   if ( digitalRead(SWITCH) == LOW ) {
@@ -220,6 +222,7 @@ void gpioLoop() {
   }
 
   if (sChanged) {
+    gpioTrigger = true;
     if (momentarySwitch) {
       // we only trigger relay on switch press. on release - just mqtt communication
       if (sState) {
@@ -233,22 +236,18 @@ void gpioLoop() {
       }
     } else {
       // otherwise we trigger relay on each press/release, but making two mqtt communications: first with '.' in the end, then without - to let backend know it was a user action
-      boolean sbState = sState;
-      sState = true;
       if (lState) {
         disableL();
       } else {
         enableL();
       }
-      sState = false;
       mqttCommunicate();
-      sState = sbState;
     }
   }
 
   if (sChanged) {
     unsigned long manualSetupActivatorDelay = millis() - manualSetupActivatorTime;
-    if (manualSetupActivatorDelay < MANUAL_SETUP_MAX_DELAY_MS){
+    if (manualSetupActivatorDelay < MANUAL_SETUP_MAX_DELAY_MS) {
       if (++manualSetupModeCounter == MANUAL_SETUP_COUNTER) {
         startWifiManager(true);
       }
@@ -281,7 +280,7 @@ void wifimanagerLoop() {
       mDnsResolver.setLocalIP(WiFi.localIP());
       mqttServerIp = mDnsResolver.search(mqttServer);
       // MQTT connection
-      if(mqttServerIp != INADDR_NONE) {
+      if (mqttServerIp != INADDR_NONE) {
         mqttClient.setServer(mqttServerIp, atoi(mqttPort));
       } else {
         mqttClient.setServer(mqttServer, atoi(mqttPort));
@@ -295,7 +294,7 @@ void wifimanagerLoop() {
   if (!offline) {
     mDnsResolver.loop();
   }
-  
+
 }
 
 void ledTick()
@@ -306,7 +305,7 @@ void ledTick()
 
 //callback notifying us of the need to save config
 void saveParamsCallback () {
-  
+
   //save the custom parameters to FS
   //read updated parameters
   strcpy(mqttServer, customMqttServer.getValue());
@@ -332,7 +331,7 @@ void saveParamsCallback () {
   serializeJson(json, configFile);
   configFile.close();
   //end save
-  
+
   wifiManagerSetupStopped();
 }
 
@@ -362,7 +361,7 @@ void startWifiManager(boolean onDemand) {
   if (!onDemand) {
     String apName = "Dozy-" + String(ESP.getChipId(), HEX);
     strcpy(mqttClientName, apName.c_str());
-    
+
     if (LittleFS.begin()) {
       if (LittleFS.exists("/config.json")) {
         //file exists, reading and loading
@@ -371,7 +370,7 @@ void startWifiManager(boolean onDemand) {
           size_t size = configFile.size();
           // Allocate a buffer to store contents of the file.
           std::unique_ptr<char[]> buf(new char[size]);
-  
+
           configFile.readBytes(buf.get(), size);
           DynamicJsonDocument json(1024);
           DeserializationError jsonError = deserializeJson(json, buf.get());
@@ -389,10 +388,10 @@ void startWifiManager(boolean onDemand) {
       }
     }
     //end read
-  
+
     WiFi.hostname(mqttClientName);
     ArduinoOTA.setHostname(mqttClientName);
-  
+
     customMqttServer.setValue(mqttServer, 40);
     customMqttPort.setValue(mqttPort, 6);
     customMqttClientName.setValue(mqttClientName, 40);
@@ -400,13 +399,13 @@ void startWifiManager(boolean onDemand) {
     customMqttPassword.setValue(mqttPassword, 40);
     customMqttOutTopic.setValue(mqttOutTopic, 40);
     customMqttInTopic.setValue(mqttInTopic, 40);
-  
+
     wifiManager.setSaveParamsCallback(saveParamsCallback);
     wifiManager.setAPCallback(wifiManagerSetupStarted);
-  
+
     wifiManager.setConfigPortalTimeout(CONFIG_TIMEOUT_MS / 1000);
     wifiManager.setConfigPortalBlocking(false);
-  
+
     //add all your parameters here
     wifiManager.addParameter(&customMqttServer);
     wifiManager.addParameter(&customMqttPort);
@@ -422,7 +421,7 @@ void startWifiManager(boolean onDemand) {
 
   // refresh dirty hacked boolean values
   customMomentarySwitch.setValue(momentarySwitch ? CHECKBOX_CHECKED : CHECKBOX, 70);
-  
+
   if (onDemand) {
     wifiManager.startConfigPortal(mqttClientName);
   } else {
@@ -438,7 +437,7 @@ void enableL() {
   mqttCommunicate();
 }
 
-void disableL(){
+void disableL() {
   digitalWrite(RELAY, LOW); // turn off
   digitalWrite(LED_GREEN, HIGH); // turn off
   lState = false;
@@ -447,7 +446,7 @@ void disableL(){
 
 void mqttLoop() {
   if (!mqttClient.connected()) {
-    if(!mqttReconnect()){
+    if (!mqttReconnect()) {
       return;
     }
   }
@@ -459,7 +458,8 @@ void mqttCommunicate() {
     char mqttMsg[3];
     mqttMsg[2] = 0;
     mqttMsg[0] = lState ? '1' : '0';
-    mqttMsg[1] = sState ? '.' : 0;
+    mqttMsg[1] = gpioTrigger ? '.' : 0;
+    gpioTrigger = false;
     mqttClient.publish(mqttOutTopic, mqttMsg, true);
   }
 }
@@ -472,25 +472,25 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   payloadCopy[_length] = 0x0;
 
   String cmd = String(payloadCopy);
-  if (cmd.startsWith(CMD_SETUP)){
+  if (cmd.startsWith(CMD_SETUP)) {
     startWifiManager(true);
   }
 
-  if (cmd.startsWith(CMD_RESET)){
+  if (cmd.startsWith(CMD_RESET)) {
     restart = true;
   }
 
-  if (cmd.startsWith(CMD_OTA)){
+  if (cmd.startsWith(CMD_OTA)) {
     otaStart = millis();
     otaRunning = true;
     ledTicker.attach_ms(300, ledTick); // start fast blinking
     ArduinoOTA.begin();
   }
 
-  if (cmd.startsWith(CMD_ON)){
+  if (cmd.startsWith(CMD_ON)) {
     enableL();
   }
-  if (cmd.startsWith(CMD_OFF)){
+  if (cmd.startsWith(CMD_OFF)) {
     disableL();
   }
 
